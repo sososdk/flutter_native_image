@@ -3,14 +3,19 @@ package com.example.flutternativeimage;
 import android.app.Activity;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
-import android.media.ExifInterface;
+import android.graphics.Matrix;
 import android.util.Log;
 
+import androidx.exifinterface.media.ExifInterface;
 import java.io.ByteArrayOutputStream;
+import java.io.Closeable;
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
+import java.io.Flushable;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.OutputStream;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -61,14 +66,7 @@ public class FlutterNativeImagePlugin implements MethodCallHandler {
       int newWidth = targetWidth == 0 ? (bmp.getWidth() / 100 * resizePercentage) : targetWidth;
       int newHeight = targetHeight == 0 ? (bmp.getHeight() / 100 * resizePercentage) : targetHeight;
 
-      bmp = Bitmap.createScaledBitmap(
-              bmp, newWidth, newHeight, true);
-
-      // reconfigure bitmap to use RGB_565 before compressing
-      // fixes https://github.com/btastic/flutter_native_image/issues/47
-      Bitmap newBmp = bmp.copy(Bitmap.Config.RGB_565, false);
-      newBmp.compress(Bitmap.CompressFormat.JPEG, quality, bos);
-
+      bmp = Bitmap.createScaledBitmap(bmp, newWidth, newHeight, true);
       try {
         String outputFileName = File.createTempFile(
           getFilenameWithoutExtension(file).concat("_compressed"),
@@ -76,10 +74,28 @@ public class FlutterNativeImagePlugin implements MethodCallHandler {
           activity.getExternalCacheDir()
         ).getPath();
 
+        int orientation = getOrientation(fileName);
+        if (orientation != 0) {
+          final int width = bmp.getWidth();
+          final int height = bmp.getHeight();
+
+          final Matrix m = new Matrix();
+          m.setRotate(orientation, width / 2.f, height / 2.f);
+          bmp = Bitmap.createBitmap(bmp, 0, 0, width, height, m, false);
+        }
+
+        Bitmap.CompressFormat compressFormat;
+        if (bmp.hasAlpha()) {
+          compressFormat = Bitmap.CompressFormat.PNG;
+        } else {
+          compressFormat = Bitmap.CompressFormat.JPEG;
+        }
+        bmp.compress(compressFormat, quality, bos);
+
         OutputStream outputStream = new FileOutputStream(outputFileName);
         bos.writeTo(outputStream);
 
-        copyExif(fileName, outputFileName);
+        //copyExif(fileName, outputFileName);
 
         result.success(outputFileName);
       } catch (FileNotFoundException e) {
@@ -88,6 +104,8 @@ public class FlutterNativeImagePlugin implements MethodCallHandler {
       } catch (IOException e) {
         e.printStackTrace();
         result.error("something went wrong", fileName, null);
+      } finally {
+        closeSilently(bos);
       }
 
       return;
@@ -243,6 +261,37 @@ public class FlutterNativeImagePlugin implements MethodCallHandler {
       return fileName.substring(0, fileName.lastIndexOf("."));
     } else {
       return fileName;
+    }
+  }
+
+
+  public static int getOrientation(String path) throws IOException {
+    InputStream inputStream = null;
+    try {
+      inputStream = new FileInputStream(path);
+      ExifInterface exifInterface = new ExifInterface(inputStream);
+      return exifInterface.getRotationDegrees();
+    } finally {
+      closeSilently(inputStream);
+    }
+  }
+
+  public static void closeSilently(Closeable... closeables) {
+    if (closeables != null) {
+      for (Closeable closeable : closeables) {
+        if (closeable != null) {
+          try {
+            if (closeable instanceof Flushable) {
+              try {
+                ((Flushable) closeable).flush();
+              } catch (IOException ignored) {
+              }
+            }
+            closeable.close();
+          } catch (IOException ignored) {
+          }
+        }
+      }
     }
   }
 }
